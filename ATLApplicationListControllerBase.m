@@ -7,6 +7,8 @@
 
 @interface UIImage (Private)
 + (instancetype)_applicationIconImageForBundleIdentifier:(NSString*)bundleIdentifier format:(int)format scale:(CGFloat)scale;
++ (instancetype)_iconForResourceProxy:(id)applicationProxy variant:(int)iconVariant variantsScale:(CGFloat)scale;
++ (int)_iconVariantForUIApplicationIconFormat:(int)iconFormat scale:(CGFloat *)scale;
 @end
 
 @implementation ATLApplicationListControllerBase
@@ -325,7 +327,7 @@
 	return nil;
 }
 
-- (PSSpecifier*)createSpecifierForApplicationProxy:(LSApplicationProxy*)applicationProxy
+- (PSSpecifier*)createSpecifierForApplicationProxy:(LSApplicationProxy*)applicationProxy (int)iconVariant
 {
 	SEL setter = [self setterForSpecifierOfApplicationProxy:applicationProxy];
 	SEL getter = [self getterForSpecifierOfApplicationProxy:applicationProxy];
@@ -362,7 +364,7 @@
 		UITableView* tableView = [self valueForKey:@"_table"];
 		dispatch_async(_iconLoadQueue, ^{
 			//usleep(1000 * 500); // (test delay for debugging)
-			UIImage* iconImage = [UIImage _applicationIconImageForBundleIdentifier:applicationProxy.atl_bundleIdentifier format:0 scale:[UIScreen mainScreen].scale];
+			UIImage* iconImage = [UIImage _iconForResourceProxy:applicationProxy variant:iconVariant variantsScale:[UIScreen mainScreen].scale];
 			dispatch_async(dispatch_get_main_queue(), ^{
 				[specifier setProperty:iconImage forKey:@"iconImage"];
 				if([self containsSpecifier:specifier])
@@ -383,7 +385,7 @@
 	}
 	else
 	{
-		UIImage* iconImage = [UIImage _applicationIconImageForBundleIdentifier:applicationProxy.atl_bundleIdentifier format:0 scale:[UIScreen mainScreen].scale];
+		UIImage* iconImage = [UIImage _iconForResourceProxy:applicationProxy variant:iconVariant variantsScale:[UIScreen mainScreen].scale];
 		[specifier setProperty:iconImage forKey:@"iconImage"];
 	}
 
@@ -442,9 +444,43 @@
 {
 	NSMutableArray* sectionSpecifiers = [NSMutableArray new];
 
+	/*
+ 	 The [UIImage _applicationIconImageForBundleIdentifier:format:scale:] method has three steps (iOS 7.0+):
+	 Step 1: Get LSApplicationProxy for identifier
+	 Step 2: Get the variant to use with the [UIImage _iconVariantForUIApplicationIconFormat:scale:] method
+	 Step 3: Actually generate the image with [UIImage _iconForResourceProxy:variant:variantsScale:] method
+	 Step 3 is the main bottleneck and we can't really skip it. But nonetheless steps 1/2 still do have an impact.
+	 Even if we can't remove step 3, saving steps 1 and 2 would still be an improvement on performance (although admittedly minor).
+	 We can replicate this method ourselves to remove the two not needed steps.
+	 How? Well, first off, we already have the LSApplicationProxy for the app, so we can just re-use it and skip step 1 easily.
+	 For step 2, AltList always uses the 0 format, and of course, devices will not randomly change screen scale. Meaning the result of this will *always* be the same!
+	 So, we can run it *before* looping through the apps in the application section and re-use that value so we only run it once per section rather than once per app.
+
+(if you *really* want to, 3rd step just calls [UIImage _iconForResourceProxy:variant:options:variantsScale:] with options 0x0 on newer iOS versions, so calling that directly saves a objc_msgSend, but AltList supports down to iOS 7 and on some old iOS versions the version of this method does not have a variant of this method with options: and this is a micro optimization anyway)
+
+  ...TODO before commit (making a note here so I remember): test more :P
+(remove this before the PR to opa obv)
+alt_bundleIdentifier or something gets bundleIdentifier or applicationIdentifier but the latter exists in modern iOS still and returns same value...
+IG modern iOS applicationIdentifier method calls bundleIdentifier method so calling it directly would save a objc_msgSend call on those... but respondsToSelector will prob take more time than the time you save from that call
+look into this more, but assuming we can just call applicationIdentifier directly for like a micro optimization in performance
+
+also if localizedName isnt cached it tries to get it from the nsbundle instead of the localizedName method at first bc IPC slow
+but?? according to my testing, using nsbundle to find it is almost always actually slower in the end???
+(admittedly not by much, but still worth looking into...) test this and look into this more, admittedly my testing was on newer iOS and this may be correct for old iOS
+
+im kind of embarrassed of myself for passing the iconVariant as an arg into the method... is this too much voodoo, or divine intellect? lol look for better ways to do it
+
+also if i actually make that arg to the PR (hope i dont) remember to add to header obv
+	*/
+
+        CGFloat *scalePtr = malloc(sizeof(CGFloat));
+        *scalePtr = [UIScreen mainScreen].scale;
+        int iconVariant = [UIImage _iconVariantForUIApplicationIconFormat:0 scale:scalePtr];
+        free(scalePtr);
+
 	[section.applicationsInSection enumerateObjectsUsingBlock:^(LSApplicationProxy* appProxy, NSUInteger idx, BOOL *stop)
 	{
-		PSSpecifier* appSpecifier = [self createSpecifierForApplicationProxy:appProxy];
+		PSSpecifier* appSpecifier = [self createSpecifierForApplicationProxy:appProxy iconVariant:iconVariant];
 		if(appSpecifier)
 		{
 			[sectionSpecifiers addObject:appSpecifier];
