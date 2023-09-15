@@ -473,10 +473,8 @@ im kind of embarrassed of myself for passing the iconVariant as an arg into the 
 also if i actually make that arg to the PR (hope i dont) remember to add to header obv
 	*/
 
-        CGFloat *scalePtr = malloc(sizeof(CGFloat));
-        *scalePtr = [UIScreen mainScreen].scale;
-        int iconVariant = [UIImage _iconVariantForUIApplicationIconFormat:0 scale:scalePtr];
-        free(scalePtr);
+        CGFloat scale = [UIScreen mainScreen].scale;
+        int iconVariant = [UIImage _iconVariantForUIApplicationIconFormat:0 scale:&scale];
 
 	[section.applicationsInSection enumerateObjectsUsingBlock:^(LSApplicationProxy* appProxy, NSUInteger idx, BOOL *stop)
 	{
